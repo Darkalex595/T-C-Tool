@@ -1,3 +1,3 @@
-from backend.services import audit, catalogs, compliance, requests
+from backend.services import audit, auth, catalogs, compliance, requests, users
 
-__all__ = ["audit", "catalogs", "compliance", "requests"]
+__all__ = ["audit", "auth", "catalogs", "compliance", "requests", "users"]

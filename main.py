@@ -11,12 +11,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.config import get_sanitized_target, settings
 from backend.database import async_engine, get_async_db
 from backend.routers import (
+    audit_router,
     auth_router,
     catalogs_router,
     certifications_router,
     regulations_router,
     requests_router,
+    roles_router,
     routes_router,
+    users_router,
 )
 
 
@@ -44,11 +47,14 @@ app.add_middleware(
 
 for api_router in (
     auth_router,
+    users_router,
+    roles_router,
     catalogs_router,
     routes_router,
     regulations_router,
     requests_router,
     certifications_router,
+    audit_router,
 ):
     app.include_router(api_router, prefix=settings.API_PREFIX)
 

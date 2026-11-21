@@ -216,8 +216,57 @@ class ReqGeneralCreate(BaseModel):
         return self
 
 
+class ReqFoodUpdate(BaseModel):
+    ingredients_summary: str | None = Field(default=None, min_length=3)
+    allergens: list[str] | None = None
+    storage_condition: str | None = Field(default=None, min_length=2, max_length=60)
+    shelf_life_days: int | None = Field(default=None, gt=0)
+    requires_cold_chain: bool | None = None
+    contains_animal_origin: bool | None = None
+    has_gmo_ingredients: bool | None = None
+    net_weight_value: Decimal | None = Field(default=None, gt=0)
+    net_weight_unit: str | None = Field(default=None, max_length=15)
+    nutrition_panel_verified: bool | None = None
+
+
+class ReqNoFoodUpdate(BaseModel):
+    material_composition: str | None = Field(default=None, min_length=3)
+    is_hazmat_or_flammable: bool | None = None
+    un_hazmat_code: str | None = Field(default=None, max_length=20)
+    contains_lithium_battery: bool | None = None
+    voltage_specs: str | None = Field(default=None, max_length=80)
+    safety_standards: list[str] | None = None
+    requires_msds: bool | None = None
+    target_age_group: str | None = Field(default=None, max_length=60)
+
+
+class ReqProduceUpdate(BaseModel):
+    botanical_name: str | None = Field(default=None, min_length=2, max_length=160)
+    variety_cultivar: str | None = Field(default=None, max_length=120)
+    grower_region: str | None = Field(default=None, min_length=2, max_length=120)
+    is_organic: bool | None = None
+    cold_treatment_required: bool | None = None
+    fumigation_protocol: str | None = Field(default=None, max_length=140)
+    transit_temp_min_c: Decimal | None = None
+    transit_temp_max_c: Decimal | None = None
+    packaging_material: str | None = Field(default=None, max_length=120)
+
+
+class ReqPlantApprovalUpdate(BaseModel):
+    plant_legal_name: str | None = Field(default=None, min_length=2, max_length=180)
+    plant_registration_number: str | None = Field(default=None, min_length=2, max_length=80)
+    plant_address: str | None = Field(default=None, min_length=5)
+    species_or_product_scope: str | None = Field(default=None, min_length=2, max_length=200)
+    haccp_certified: bool | None = None
+    gfsi_scheme: str | None = Field(default=None, max_length=80)
+    last_audit_date: date | None = None
+    audit_expiration_date: date | None = None
+    fda_or_usda_establishment_id: str | None = Field(default=None, max_length=60)
+
+
 class ReqGeneralUpdate(BaseModel):
     is_urgent: bool | None = None
+    fiscal_year_id: UUID | None = None
     subcategory_id: UUID | None = None
     import_route_id: UUID | None = None
     item_code: str | None = Field(default=None, max_length=40)
@@ -227,6 +276,24 @@ class ReqGeneralUpdate(BaseModel):
     comments: str | None = None
     assigned_to_id: UUID | None = None
     sla_due_at: datetime | None = None
+    destination_country_codes: list[str] | None = Field(default=None, min_length=1)
+
+    food_detail: ReqFoodUpdate | None = None
+    no_food_detail: ReqNoFoodUpdate | None = None
+    produce_detail: ReqProduceUpdate | None = None
+    plant_approval_detail: ReqPlantApprovalUpdate | None = None
+
+    @field_validator("destination_country_codes")
+    @classmethod
+    def normalize_destinations(cls, values: list[str] | None) -> list[str] | None:
+        if values is None:
+            return None
+        normalized = list(dict.fromkeys(v.strip().upper() for v in values if v.strip()))
+        if not normalized or any(len(code) != 2 for code in normalized):
+            raise ValueError(
+                "destination_country_codes debe incluir al menos un código ISO-2 válido."
+            )
+        return normalized
 
 
 class ReqGeneralStatusUpdate(BaseModel):
@@ -234,6 +301,18 @@ class ReqGeneralStatusUpdate(BaseModel):
 
     status: RequestStatus
     comments: str | None = None
+
+
+class DashboardMetricsRead(BaseModel):
+    """Métricas agregadas en tiempo real desde PostgreSQL para el panel operativo."""
+
+    total_requests: int
+    urgent_open_requests: int
+    overdue_sla_requests: int
+    requests_by_status: dict[str, int]
+    requests_by_branch: dict[str, int]
+    assessments_by_decision: dict[str, int]
+    regulations_by_status: dict[str, int]
 
 
 class ReqGeneralSummaryRead(BaseModel):

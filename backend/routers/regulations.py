@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, Request, status
+from fastapi import APIRouter, Depends, Query, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.database import get_async_db
@@ -25,18 +25,20 @@ async def list_regulations(
     status_filter: RegulationStatus | None = Query(default=None, alias="status"),
     department_id: UUID | None = Query(default=None),
     subcategory_id: UUID | None = Query(default=None),
+    search: str | None = Query(default=None, max_length=120),
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     _current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_async_db),
 ) -> PaginatedResponse[RegulationRead]:
-    """Consulta paginada de regulaciones multinacionales por país, estado o taxonomía."""
+    """Consulta paginada de regulaciones multinacionales por país, estado, taxonomía o búsqueda."""
     items, total = await compliance_service.list_regulations(
         db,
         country_code=country_code,
         status_filter=status_filter,
         department_id=department_id,
         subcategory_id=subcategory_id,
+        search=search,
         limit=limit,
         offset=offset,
     )
@@ -94,3 +96,20 @@ async def update_regulation(
         ip_address=request.client.host if request.client else None,
     )
     return RegulationRead.model_validate(regulation)
+
+
+@router.delete("/{regulation_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_regulation(
+    regulation_id: UUID,
+    request: Request,
+    current_user: User = Depends(require_permissions("regulations:manage")),
+    db: AsyncSession = Depends(get_async_db),
+) -> Response:
+    """Elimina una regulación multinacional y deja constancia en la bitácora de auditoría."""
+    await compliance_service.delete_regulation(
+        db,
+        regulation_id,
+        actor=current_user,
+        ip_address=request.client.host if request.client else None,
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

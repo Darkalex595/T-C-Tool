@@ -4,7 +4,7 @@ from datetime import date, datetime
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from backend.models import (
     LogisticsRouteCode,
@@ -13,6 +13,17 @@ from backend.models import (
     RegulationStatus,
 )
 from backend.schemas.catalogs import SubcategoryRead
+
+
+def _validate_http_url(value: str | None) -> str | None:
+    if value is None:
+        return None
+    cleaned = value.strip()
+    if not cleaned:
+        return None
+    if not (cleaned.startswith("https://") or cleaned.startswith("http://")):
+        raise ValueError("source_url debe iniciar con http:// o https://.")
+    return cleaned
 
 
 # --- Rutas Logísticas (ImportRoute) ---
@@ -31,6 +42,11 @@ class ImportRouteCreate(BaseModel):
     is_direct_to_destination: bool = False
     is_active: bool = True
 
+    @field_validator("dc_code")
+    @classmethod
+    def normalize_dc_code(cls, value: str) -> str:
+        return value.strip().upper()
+
     @field_validator("country_code")
     @classmethod
     def normalize_country_code(cls, value: str | None) -> str | None:
@@ -39,6 +55,7 @@ class ImportRouteCreate(BaseModel):
 
 class ImportRouteUpdate(BaseModel):
     route_name: str | None = Field(default=None, min_length=3, max_length=120)
+    dc_code: str | None = Field(default=None, min_length=2, max_length=30)
     country_code: str | None = Field(default=None, min_length=2, max_length=2)
     classification: ProductClassification | None = None
     required_document: str | None = Field(default=None, min_length=3, max_length=200)
@@ -47,6 +64,11 @@ class ImportRouteUpdate(BaseModel):
     non_us_origin_rules: str | None = None
     is_direct_to_destination: bool | None = None
     is_active: bool | None = None
+
+    @field_validator("dc_code")
+    @classmethod
+    def normalize_dc_code(cls, value: str | None) -> str | None:
+        return value.strip().upper() if value else None
 
     @field_validator("country_code")
     @classmethod
@@ -94,6 +116,23 @@ class RegulationCreate(BaseModel):
     def normalize_country_code(cls, value: str) -> str:
         return value.strip().upper()
 
+    @field_validator("source_url")
+    @classmethod
+    def validate_source_url(cls, value: str | None) -> str | None:
+        return _validate_http_url(value)
+
+    @model_validator(mode="after")
+    def validate_dates(self) -> RegulationCreate:
+        if (
+            self.effective_date is not None
+            and self.expiration_date is not None
+            and self.expiration_date < self.effective_date
+        ):
+            raise ValueError(
+                "expiration_date debe ser mayor o igual a effective_date."
+            )
+        return self
+
 
 class RegulationUpdate(BaseModel):
     department_id: UUID | None = None
@@ -107,6 +146,23 @@ class RegulationUpdate(BaseModel):
     source_url: str | None = Field(default=None, max_length=500)
     metadata_extra: dict[str, Any] | None = None
     subcategory_ids: list[UUID] | None = None
+
+    @field_validator("source_url")
+    @classmethod
+    def validate_source_url(cls, value: str | None) -> str | None:
+        return _validate_http_url(value)
+
+    @model_validator(mode="after")
+    def validate_dates(self) -> RegulationUpdate:
+        if (
+            self.effective_date is not None
+            and self.expiration_date is not None
+            and self.expiration_date < self.effective_date
+        ):
+            raise ValueError(
+                "expiration_date debe ser mayor o igual a effective_date."
+            )
+        return self
 
 
 class RegulationRead(BaseModel):

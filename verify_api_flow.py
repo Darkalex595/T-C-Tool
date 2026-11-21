@@ -207,37 +207,166 @@ def run_flow(
         assert len(mid_data["certifications"]) == 1
         assert len(mid_data["assessments"]) == 1
 
-        # 10. Analista aprueba/cierra la solicitud (permiso requests:approve)
+        # 10. Bloque 3: Edición parcial 1:1 + protección 409 al quitar país con dictamen
+        conflict_patch = client.patch(
+            f"/api/v1/requests/{req_id}",
+            headers=buyer_headers,
+            json={"destination_country_codes": ["CO"]},
+        )
+        assert_status(
+            conflict_patch,
+            409,
+            "11a. PATCH /requests/{id} bloquea quitar país con dictamen (409)",
+        )
+
+        detail_patch = client.patch(
+            f"/api/v1/requests/{req_id}",
+            headers=buyer_headers,
+            json={
+                "is_urgent": True,
+                "food_detail": {"shelf_life_days": 540, "nutrition_panel_verified": True},
+            },
+        )
+        assert_status(detail_patch, 200, "11b. PATCH /requests/{id} edita detalle 1:1")
+        assert detail_patch.json()["food_detail"]["shelf_life_days"] == 540
+
+        assess_list = client.get(
+            f"/api/v1/requests/{req_id}/assessments", headers=analyst_headers
+        )
+        assert_status(assess_list, 200, "11c. GET /requests/{id}/assessments")
+        assert len(assess_list.json()) == 1
+
+        # 11. Analista aprueba/cierra la solicitud (permiso requests:approve)
         close_resp = client.patch(
             f"/api/v1/requests/{req_id}/status",
             headers=analyst_headers,
             json={"status": "completed", "comments": "Aprobado por Compliance Analyst (E2E)."},
         )
-        assert_status(close_resp, 200, "11. PATCH /requests/{id}/status -> completed")
+        assert_status(close_resp, 200, "12. PATCH /requests/{id}/status -> completed")
         assert close_resp.json()["closed_at"] is not None
 
-        # 11. Analista NO puede crear departamentos (solo users:admin)
-        analyst_admin_block = client.post(
-            "/api/v1/catalogs/departments",
-            headers=analyst_headers,
-            json={"code": "D-TMP", "name": "Temp Unauthorized"},
+        # 12. Verificar KPIs en tiempo real y bloqueos RBAC de analista (users/audit/departments)
+        metrics_resp = client.get(
+            "/api/v1/requests/summary/metrics", headers=analyst_headers
         )
-        assert_status(analyst_admin_block, 403, "12. RBAC Analyst bloqueado en POST /departments")
+        assert_status(metrics_resp, 200, "13a. GET /requests/summary/metrics")
+        assert metrics_resp.json()["total_requests"] >= 1
 
-        # 12. Login Admin + consulta de regulaciones paginadas
+        for label, method, path, body in [
+            ("13b. RBAC Analyst bloqueado en GET /users", "GET", "/api/v1/users", None),
+            ("13c. RBAC Analyst bloqueado en GET /audit-logs", "GET", "/api/v1/audit-logs", None),
+            (
+                "13d. RBAC Analyst bloqueado en POST /departments",
+                "POST",
+                "/api/v1/catalogs/departments",
+                {"code": "D-TMP", "name": "Temp Unauthorized"},
+            ),
+        ]:
+            blocked = client.request(method, path, headers=analyst_headers, json=body)
+            assert_status(blocked, 403, label)
+
+        # 13. Bloque 4: Certificaciones GET global + detalle individual
+        cert_get = client.get(f"/api/v1/certifications/{cert_id}", headers=analyst_headers)
+        assert_status(cert_get, 200, "14a. GET /certifications/{id}")
+
+        certs_search = client.get(
+            f"/api/v1/certifications?req_general_id={req_id}&search=Free",
+            headers=analyst_headers,
+        )
+        assert_status(certs_search, 200, "14b. GET /certifications (filtro + búsqueda)")
+        assert certs_search.json()["total"] >= 1
+
+        # 14. Bloque 4: CRUD completo de Regulaciones (POST -> GET search -> PATCH -> DELETE)
+        reg_create = client.post(
+            "/api/v1/regulations",
+            headers=analyst_headers,
+            json={
+                "country_code": "CR",
+                "regulation_code": "E2E-REG-2026",
+                "title": "Regulación Temporal E2E Etiquetado",
+                "issuing_authority": "Ministerio de Salud",
+                "status": "draft",
+                "summary": "Regulación de prueba creada por script E2E para validar CRUD.",
+                "effective_date": "2026-01-01",
+                "expiration_date": "2027-01-01",
+                "source_url": "https://example.org/reg-e2e",
+            },
+        )
+        assert_status(reg_create, 201, "15a. POST /regulations")
+        reg_id = reg_create.json()["id"]
+
+        reg_search = client.get(
+            "/api/v1/regulations?search=E2E-REG-2026", headers=analyst_headers
+        )
+        assert_status(reg_search, 200, "15b. GET /regulations?search=...")
+        assert reg_search.json()["total"] >= 1
+
+        reg_del = client.delete(f"/api/v1/regulations/{reg_id}", headers=analyst_headers)
+        assert_status(reg_del, 204, "15c. DELETE /regulations/{id}")
+
+        # 15. Login Admin + Bloques 1, 3 y 4 (users, audit-logs, routes CRUD + 409)
         admin_auth = login(client, admin_email, password, "admin")
         admin_headers = auth_headers(admin_auth["access_token"])
         assert "users:admin" in admin_auth["user"]["permissions"]
 
-        regs_resp = client.get("/api/v1/regulations?limit=10&offset=0", headers=admin_headers)
-        assert_status(regs_resp, 200, "13. GET /regulations (paginado)")
-        print(f"       Regulaciones totales en BD: {regs_resp.json()['total']}")
+        users_resp = client.get("/api/v1/users", headers=admin_headers)
+        assert_status(users_resp, 200, "16a. GET /users (admin)")
 
-        # 13. Eliminar certificación de prueba para validar DELETE 204
+        audit_resp = client.get(
+            f"/api/v1/audit-logs?entity_id={req_id}&limit=10", headers=admin_headers
+        )
+        assert_status(audit_resp, 200, "16b. GET /audit-logs (admin)")
+        assert audit_resp.json()["total"] >= 1
+
+        # Verificar protección 409 al intentar eliminar ruta en uso
+        route_in_use_del = client.delete(
+            f"/api/v1/routes/{route_id}", headers=admin_headers
+        )
+        assert_status(
+            route_in_use_del,
+            409,
+            "16c. DELETE /routes/{id} bloqueado si está en uso (409)",
+        )
+
+        # Crear, editar y eliminar una ruta temporal sin uso
+        tmp_route = client.post(
+            "/api/v1/routes",
+            headers=admin_headers,
+            json={
+                "route_code": "direct_shipment",
+                "route_name": "E2E Temporary Route",
+                "dc_code": "E2E-TMP-01",
+                "country_code": "CR",
+                "classification": "food",
+                "required_document": "Commercial Invoice & Packing List",
+                "is_direct_to_destination": True,
+            },
+        )
+        assert_status(tmp_route, 201, "16d. POST /routes (temporal)")
+        tmp_route_id = tmp_route.json()["id"]
+
+        tmp_route_patch = client.patch(
+            f"/api/v1/routes/{tmp_route_id}",
+            headers=admin_headers,
+            json={"dc_code": "E2E-TMP-02"},
+        )
+        assert_status(tmp_route_patch, 200, "16e. PATCH /routes/{id} (editar dc_code)")
+
+        tmp_route_del = client.delete(
+            f"/api/v1/routes/{tmp_route_id}", headers=admin_headers
+        )
+        assert_status(tmp_route_del, 204, "16f. DELETE /routes/{id} (sin uso)")
+
+        # 16. Limpiar dictamen y certificación de prueba (DELETE 204)
+        del_assess = client.delete(
+            f"/api/v1/requests/{req_id}/assessments/CR", headers=analyst_headers
+        )
+        assert_status(del_assess, 204, "17a. DELETE /requests/{id}/assessments/CR")
+
         del_cert = client.delete(f"/api/v1/certifications/{cert_id}", headers=analyst_headers)
-        assert_status(del_cert, 204, "14. DELETE /certifications/{id}")
+        assert_status(del_cert, 204, "17b. DELETE /certifications/{id}")
 
-    print("\n=== TODAS LAS VALIDACIONES E2E PASARON CORRECTAMENTE ===\n")
+    print("\n=== TODAS LAS VALIDACIONES E2E (BLOQUES 1-4) PASARON CORRECTAMENTE ===\n")
 
 
 def parse_args() -> argparse.Namespace:

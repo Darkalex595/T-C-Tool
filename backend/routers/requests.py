@@ -2,13 +2,14 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, Request, status
+from fastapi import APIRouter, Depends, Path, Query, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.database import get_async_db
 from backend.models import RequestBranchType, RequestStatus, User
 from backend.schemas.compliance import CertificationCreate, CertificationRead
 from backend.schemas.requests import (
+    DashboardMetricsRead,
     ImportAssessmentRead,
     ImportAssessmentUpsert,
     PaginatedResponse,
@@ -54,6 +55,16 @@ async def list_requests(
         limit=limit,
         offset=offset,
     )
+
+
+@router.get("/summary/metrics", response_model=DashboardMetricsRead)
+async def get_dashboard_metrics(
+    _current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_db),
+) -> DashboardMetricsRead:
+    """Devuelve KPIs operativos agregados en tiempo real directamente desde PostgreSQL."""
+    metrics = await request_service.get_dashboard_metrics(db)
+    return DashboardMetricsRead.model_validate(metrics)
 
 
 @router.get("/{request_id}", response_model=ReqGeneralDetailRead)
@@ -125,6 +136,17 @@ async def update_request_status(
     return ReqGeneralDetailRead.model_validate(req)
 
 
+@router.get("/{request_id}/assessments", response_model=list[ImportAssessmentRead])
+async def list_request_assessments(
+    request_id: UUID,
+    _current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_db),
+) -> list[ImportAssessmentRead]:
+    """Lista los dictámenes técnicos por país destino registrados para una solicitud."""
+    assessments = await request_service.list_request_assessments(db, request_id)
+    return [ImportAssessmentRead.model_validate(a) for a in assessments]
+
+
 @router.put("/{request_id}/assessments", response_model=ImportAssessmentRead)
 async def upsert_request_assessment(
     request_id: UUID,
@@ -142,6 +164,28 @@ async def upsert_request_assessment(
         ip_address=request.client.host if request.client else None,
     )
     return ImportAssessmentRead.model_validate(assessment)
+
+
+@router.delete(
+    "/{request_id}/assessments/{country_code}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_request_assessment(
+    request_id: UUID,
+    request: Request,
+    country_code: str = Path(..., min_length=2, max_length=2),
+    current_user: User = Depends(require_permissions("requests:assess")),
+    db: AsyncSession = Depends(get_async_db),
+) -> Response:
+    """Elimina el dictamen técnico de un país destino específico de la solicitud."""
+    await request_service.delete_request_assessment(
+        db,
+        request_id,
+        country_code,
+        actor=current_user,
+        ip_address=request.client.host if request.client else None,
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/{request_id}/certifications", response_model=list[CertificationRead])

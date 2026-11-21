@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, Request, status
+from fastapi import APIRouter, Depends, Query, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.database import get_async_db
-from backend.models import ProductClassification, User
+from backend.models import LogisticsRouteCode, ProductClassification, User
 from backend.schemas.compliance import (
     ImportRouteCreate,
     ImportRouteRead,
@@ -22,15 +22,19 @@ router = APIRouter(prefix="/routes", tags=["Logistics Routes"])
 async def list_routes(
     country_code: str | None = Query(default=None, min_length=2, max_length=2),
     classification: ProductClassification | None = Query(default=None),
+    route_code: LogisticsRouteCode | None = Query(default=None),
+    search: str | None = Query(default=None, max_length=120),
     active_only: bool = Query(default=True),
     _current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_async_db),
 ) -> list[ImportRouteRead]:
-    """Lista rutas logísticas activas (filtrables por país destino y clasificación)."""
+    """Lista rutas logísticas activas (filtrables por país, clasificación, tipo de ruta y texto)."""
     routes = await compliance_service.list_import_routes(
         db,
         country_code=country_code,
         classification=classification,
+        route_code=route_code,
+        search=search,
         active_only=active_only,
     )
     return [ImportRouteRead.model_validate(r) for r in routes]
@@ -82,3 +86,20 @@ async def update_route(
         ip_address=request.client.host if request.client else None,
     )
     return ImportRouteRead.model_validate(route)
+
+
+@router.delete("/{route_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_route(
+    route_id: UUID,
+    request: Request,
+    current_user: User = Depends(require_permissions("routes:manage")),
+    db: AsyncSession = Depends(get_async_db),
+) -> Response:
+    """Elimina una ruta logística sin solicitudes asociadas (409 si está referenciada)."""
+    await compliance_service.delete_import_route(
+        db,
+        route_id,
+        actor=current_user,
+        ip_address=request.client.host if request.client else None,
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
